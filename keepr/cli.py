@@ -22,10 +22,24 @@ app = typer.Typer(
     rich_markup_mode="rich",
 )
 
-job_app = typer.Typer(help="Manage backup jobs.", no_args_is_help=True)
-server_app = typer.Typer(help="Manage SSH servers.", no_args_is_help=True)
+job_app = typer.Typer(help="Manage backup jobs.")
+server_app = typer.Typer(help="Manage SSH servers.")
 app.add_typer(job_app, name="job")
 app.add_typer(server_app, name="server")
+
+
+@job_app.callback(invoke_without_command=True)
+def job_callback(ctx: typer.Context) -> None:
+    if ctx.invoked_subcommand is None:
+        typer.echo(ctx.get_help())
+        raise typer.Exit(0)
+
+
+@server_app.callback(invoke_without_command=True)
+def server_callback(ctx: typer.Context) -> None:
+    if ctx.invoked_subcommand is None:
+        typer.echo(ctx.get_help())
+        raise typer.Exit(0)
 
 ConfigOption = Annotated[
     Optional[Path],
@@ -149,24 +163,54 @@ def job_add(
 
 @job_app.command("remove")
 def job_remove(
-    name: Annotated[str, typer.Argument(help="Job name")],
+    names: Annotated[list[str], typer.Argument(help="Job name(s) to remove")],
     force: Annotated[bool, typer.Option("--force", "-f")] = False,
     config: ConfigOption = None,
 ):
-    """Remove a backup job."""
+    """Remove one or more backup jobs."""
     output.header()
 
     data, path = _load_raw(config)
-    if name not in data.get("jobs", {}):
-        output.error(f"'{name}' not found.")
+    jobs = data.get("jobs", {})
+
+    missing = [n for n in names if n not in jobs]
+    if missing:
+        output.error(f"Not found: {', '.join(missing)}")
         raise typer.Exit(1)
 
-    if not force and not typer.confirm(f"  Remove '{name}'?", default=False):
-        raise typer.Exit(0)
+    if not force:
+        label = f"{len(names)} job(s): {', '.join(names)}" if len(names) > 1 else f"'{names[0]}'"
+        if not typer.confirm(f"  Remove {label}?", default=False):
+            raise typer.Exit(0)
 
-    del data["jobs"][name]
+    for name in names:
+        del data["jobs"][name]
     save_config_raw(data, path)
-    output.success(f"Removed: {name}")
+    output.success(f"Removed: {', '.join(names)}")
+
+
+@job_app.command("rename")
+def job_rename(
+    old_name: Annotated[str, typer.Argument(help="Current job name")],
+    new_name: Annotated[str, typer.Argument(help="New job name")],
+    config: ConfigOption = None,
+):
+    """Rename a backup job."""
+    output.header()
+
+    data, path = _load_raw(config)
+    jobs = data.get("jobs", {})
+
+    if old_name not in jobs:
+        output.error(f"'{old_name}' not found.")
+        raise typer.Exit(1)
+    if new_name in jobs:
+        output.error(f"'{new_name}' already exists.")
+        raise typer.Exit(1)
+
+    data["jobs"] = {(new_name if k == old_name else k): v for k, v in jobs.items()}
+    save_config_raw(data, path)
+    output.success(f"Renamed: {old_name} → {new_name}")
 
 
 @job_app.command("list")
