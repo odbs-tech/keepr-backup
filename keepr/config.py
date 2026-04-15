@@ -145,3 +145,19 @@ def load_config(config_path: Path | None = None) -> KeeprConfig:
     with open(path) as f:
         data = yaml.safe_load(f) or {}
     return KeeprConfig(**data)
+
+
+def load_config_raw(config_path: Path | None = None) -> tuple[dict, Path]:
+    """Load config as raw dict + return the file path for saving back."""
+    path = find_config_file(config_path)
+    with open(path) as f:
+        data = yaml.safe_load(f) or {}
+    return data, path
+
+
+def save_config_raw(data: dict, path: Path) -> None:
+    """Save raw config dict back to YAML."""
+    # Validate before saving
+    KeeprConfig(**data)
+    with open(path, "w") as f:
+        yaml.dump(data, f, default_flow_style=False, sort_keys=False, allow_unicode=True)
