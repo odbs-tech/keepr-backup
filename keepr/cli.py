@@ -283,12 +283,12 @@ def server_list(config: ConfigOption = None):
 
 @app.command()
 def run(
-    job_names: Annotated[Optional[list[str]], typer.Argument(help="Jobs to run")] = None,
-    all_jobs: Annotated[bool, typer.Option("--all")] = False,
-    dry_run: Annotated[bool, typer.Option("--dry-run")] = False,
+    job_names: Annotated[Optional[list[str]], typer.Argument(help="Job names (e.g. 'keepr run cortex'). Runs all if omitted.")] = None,
+    all_jobs: Annotated[bool, typer.Option("--all", help="Run all jobs")] = False,
+    dry_run: Annotated[bool, typer.Option("--dry-run", help="Preview without executing")] = False,
     config: ConfigOption = None,
 ):
-    """Run backups."""
+    """Run backup jobs. Specify job names or use --all."""
     output.header()
     cfg = _load(config)
     from keepr.backup import run_backup
@@ -478,12 +478,10 @@ def _prompt_job(data: dict, name: str | None) -> None:
             db["path"] = typer.prompt("    Path")
         else:
             if not is_ssh:
-                # Direct connection — ask for DB host
                 output.info("Connection: direct (dump runs here)")
                 db["host"] = typer.prompt("    DB host")
                 job_data["connection"] = "direct"
             else:
-                # SSH — DB host is on the server
                 output.info("Connection: SSH (dump runs on server)")
                 db["host"] = typer.prompt("    DB host (on server)", default="localhost")
                 job_data["connection"] = "ssh"
@@ -499,6 +497,27 @@ def _prompt_job(data: dict, name: str | None) -> None:
             extra = typer.prompt("    Extra dump args (optional)", default="")
             if extra:
                 db["extra_args"] = extra
+
+            # Format (postgres only)
+            if engine == "postgres":
+                output.console.print()
+                output.info("Dump format:")
+                output.info("  1) custom (.dump) — compressed, supports parallel restore")
+                output.info("  2) sql (.sql.gz) — plain SQL, human-readable")
+                fmt = _prompt_choice("Select", ["1", "2"], default="1")
+                db["format"] = "sql" if fmt == "2" else "custom"
+
+        # Binary path detection (only for direct connection)
+        if not is_ssh:
+            binary_name = {"postgres": "pg_dump", "mysql": "mysqldump", "sqlite": "sqlite3"}[engine]
+            detected = shutil.which(binary_name)
+            if detected:
+                output.success(f"{binary_name} found: {detected}")
+                if typer.confirm("    Use a different path?", default=False):
+                    db["dump_path"] = typer.prompt("    Binary path")
+            else:
+                output.warning(f"{binary_name} not found in PATH.")
+                db["dump_path"] = typer.prompt(f"    Path to {binary_name}")
 
         job_data["database"] = db
 

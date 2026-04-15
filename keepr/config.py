@@ -71,6 +71,8 @@ class DatabaseConfig(BaseModel):
     password: str | None = None
     host: str = "localhost"
     port: int = 5432
+    format: str = "custom"  # "custom" (.dump) or "sql" (.sql.gz)
+    dump_path: str | None = None  # Custom path to pg_dump/mysqldump binary
     extra_args: str | None = None
 
 

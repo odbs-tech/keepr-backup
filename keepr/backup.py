@@ -58,7 +58,7 @@ def _run_database_backup(
     dump_cmd = engine.build_dump_command(db_config)
     env = engine.get_env(db_config)
 
-    if engine.needs_compression:
+    if engine.needs_compression_for(db_config):
         dump_cmd = f"{dump_cmd} | gzip"
 
     if dry_run:
@@ -68,7 +68,7 @@ def _run_database_backup(
 
     now = datetime.now(timezone.utc)
     backup_id = generate_backup_id(job_name, now)
-    filename = generate_filename(job_name, engine.name, "database", backup_id, engine.get_file_extension())
+    filename = generate_filename(job_name, engine.name, "database", backup_id, engine.get_file_extension(db_config))
     start = time.time()
 
     locations: dict[str, str] = {}

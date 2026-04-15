@@ -7,13 +7,13 @@ from keepr.engines.base import DatabaseEngine
 class MySQLEngine(DatabaseEngine):
     name = "mysql"
 
-    @property
-    def needs_compression(self) -> bool:
+    def needs_compression_for(self, config: DatabaseConfig) -> bool:
         return True
 
     def build_dump_command(self, config: DatabaseConfig) -> str:
+        binary = config.dump_path or "mysqldump"
         parts = [
-            "mysqldump",
+            binary,
             f"-h {config.host}",
             f"-P {config.port}",
             f"-u {config.user}",
@@ -30,9 +30,7 @@ class MySQLEngine(DatabaseEngine):
 
     def build_restore_command(self, config: DatabaseConfig, backup_path: str) -> str:
         parts = [
-            "gunzip -c",
-            backup_path,
-            "|",
+            f"gunzip -c {backup_path} |",
             "mysql",
             f"-h {config.host}",
             f"-P {config.port}",
@@ -43,5 +41,5 @@ class MySQLEngine(DatabaseEngine):
         parts.append(config.name)
         return " ".join(parts)
 
-    def get_file_extension(self) -> str:
+    def get_file_extension(self, config: DatabaseConfig) -> str:
         return ".sql.gz"

@@ -14,9 +14,9 @@ class DatabaseEngine(ABC):
     def build_restore_command(self, config: DatabaseConfig, backup_path: str) -> str:
         """Build the shell command to restore from a backup file."""
 
-    @abstractmethod
-    def get_file_extension(self) -> str:
+    def get_file_extension(self, config: DatabaseConfig) -> str:
         """Return the file extension for this engine's dumps."""
+        return ".sql.gz"
 
     @property
     @abstractmethod
@@ -27,7 +27,6 @@ class DatabaseEngine(ABC):
         """Return environment variables needed for the dump/restore command."""
         return {}
 
-    @property
-    def needs_compression(self) -> bool:
+    def needs_compression_for(self, config: DatabaseConfig) -> bool:
         """Whether the dump output needs external gzip compression."""
         return False
