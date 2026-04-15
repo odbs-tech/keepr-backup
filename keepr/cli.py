@@ -22,12 +22,9 @@ app = typer.Typer(
     rich_markup_mode="rich",
 )
 
-# ── Sub-apps ──────────────────────────────────────────
-db_app = typer.Typer(help="Manage database backups.", no_args_is_help=True)
-files_app = typer.Typer(help="Manage file backups.", no_args_is_help=True)
+job_app = typer.Typer(help="Manage backup jobs.", no_args_is_help=True)
 server_app = typer.Typer(help="Manage SSH servers.", no_args_is_help=True)
-app.add_typer(db_app, name="db")
-app.add_typer(files_app, name="files")
+app.add_typer(job_app, name="job")
 app.add_typer(server_app, name="server")
 
 ConfigOption = Annotated[
@@ -58,166 +55,84 @@ def _load_raw(config: Path | None) -> tuple[dict, Path]:
 
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# keepr db add/remove/list
+# keepr init — interactive setup wizard
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-@db_app.command("add")
-def db_add(
-    name: Annotated[str, typer.Argument(help="Backup name")],
-    config: ConfigOption = None,
-):
-    """Add a database backup."""
+@app.command()
+def init():
+    """Interactive setup wizard."""
     output.header()
+    output.console.print("  Welcome to [bold]keepr[/bold]!\n")
 
-    data, path = _load_raw(config)
-    data.setdefault("servers", {})
-    data.setdefault("jobs", {})
+    target = Path.home() / ".config" / "keepr" / "keepr.yml"
+    if target.exists():
+        output.warning(f"Config already exists: {target}")
+        if not typer.confirm("  Overwrite?", default=False):
+            raise typer.Exit(0)
 
-    if name in data["jobs"]:
-        output.error(f"'{name}' already exists. Use 'keepr db remove {name}' first.")
-        raise typer.Exit(1)
+    target.parent.mkdir(parents=True, exist_ok=True)
 
-    # Engine
-    engine = _prompt_choice("Engine", ENGINES, default="postgres")
+    data: dict = {"servers": {"local": {"host": "localhost"}}, "jobs": {}}
 
-    job_data: dict = {"type": "database", "engine": engine}
-    db: dict = {}
+    # 1. Storage
+    output.console.print("  [bold]1. Storage[/bold]")
+    local_dir = typer.prompt("  Local backup path", default="~/backups")
+    data["storage"] = {"local_dir": local_dir, "server_dir": "/var/backups/keepr"}
 
-    if engine == "sqlite":
-        db["path"] = typer.prompt("  Path")
-        job_data["server"] = "local"
-        job_data["database"] = db
-        # SQLite is always local, destinations = local only or local+s3
-        dests = _prompt_destinations(data, path, ssh=False)
+    # S3
+    if typer.confirm("\n  Upload backups to S3?", default=False):
+        data["storage"]["s3"] = _prompt_s3_config()
+        default_dests = ["local", "s3"]
     else:
-        # Connection type
-        output.console.print()
-        output.info("Connection method:")
-        output.info("  1) Direct — pg_dump/mysqldump runs here, connects to DB remotely")
-        output.info("  2) SSH — connects to server and runs dump there")
-        conn = _prompt_choice("Select", ["1", "2"], default="1")
+        default_dests = ["local"]
 
-        if conn == "1":
-            # Direct connection
-            db["host"] = typer.prompt("  DB host")
-            default_port = "5432" if engine == "postgres" else "3306"
-            db["port"] = int(typer.prompt("  DB port", default=default_port))
-            db["name"] = typer.prompt("  DB name")
-            default_user = "postgres" if engine == "postgres" else "root"
-            db["user"] = typer.prompt("  DB user", default=default_user)
-            password = typer.prompt("  DB password (empty = skip)", default="", show_default=False)
-            if password:
-                db["password"] = password
-            extra = typer.prompt("  Extra dump args (optional)", default="")
-            if extra:
-                db["extra_args"] = extra
+    data["defaults"] = {
+        "retention": {"keep_local": 7, "keep_s3": 30, "keep_server": 5},
+        "destinations": default_dests,
+    }
 
-            job_data["server"] = "local"
-            job_data["database"] = db
-            dests = _prompt_destinations(data, path, ssh=False)
-        else:
-            # SSH connection
-            server_name = _prompt_server_selection(data, path)
-            db["host"] = typer.prompt("  DB host (on server)", default="localhost")
-            default_port = "5432" if engine == "postgres" else "3306"
-            db["port"] = int(typer.prompt("  DB port", default=default_port))
-            db["name"] = typer.prompt("  DB name")
-            default_user = "postgres" if engine == "postgres" else "root"
-            db["user"] = typer.prompt("  DB user", default=default_user)
-            password = typer.prompt("  DB password (empty = skip)", default="", show_default=False)
-            if password:
-                db["password"] = password
-            extra = typer.prompt("  Extra dump args (optional)", default="")
-            if extra:
-                db["extra_args"] = extra
+    # 2. Servers
+    output.console.print(f"\n  [bold]2. Servers[/bold]")
+    while typer.confirm("  Add a remote server?", default=False):
+        name = typer.prompt("    Name")
+        host = typer.prompt("    Host")
+        user = typer.prompt("    SSH user", default="root")
+        port = int(typer.prompt("    SSH port", default="22"))
+        ssh_key = typer.prompt("    SSH key (optional)", default="")
+        srv: dict = {"host": host, "user": user, "port": port}
+        if ssh_key:
+            srv["ssh_key"] = ssh_key
+        data["servers"][name] = srv
+        output.success(f"Server added: {name} ({user}@{host})")
 
-            job_data["server"] = server_name
-            job_data["database"] = db
-            dests = _prompt_destinations(data, path, ssh=True)
+    # 3. Jobs
+    output.console.print(f"\n  [bold]3. Backup jobs[/bold]")
+    while typer.confirm("  Add a backup job?", default=True if not data["jobs"] else False):
+        _prompt_job(data, None)
 
-    job_data["destinations"] = dests
+    # Save
+    save_config_raw(data, target)
 
-    # Retention
-    if typer.confirm("  Custom retention?", default=False):
-        retention = {}
-        for d in dests:
-            key = f"keep_{d}"
-            val = typer.prompt(f"    {key}", default="7")
-            retention[key] = int(val)
-        job_data["retention"] = retention
-
-    data["jobs"][name] = job_data
-    save_config_raw(data, path)
-
-    srv = job_data["server"]
-    host = db.get("host") or db.get("path", "")
-    output.success(f"Added: {name} ({engine} @ {host}) — server: {srv}")
-
-
-@db_app.command("remove")
-def db_remove(
-    name: Annotated[str, typer.Argument(help="Backup name")],
-    force: Annotated[bool, typer.Option("--force", "-f")] = False,
-    config: ConfigOption = None,
-):
-    """Remove a database backup."""
-    output.header()
-
-    data, path = _load_raw(config)
-    jobs = data.get("jobs", {})
-
-    if name not in jobs:
-        output.error(f"'{name}' not found.")
-        raise typer.Exit(1)
-
-    if jobs[name].get("type") != "database":
-        output.error(f"'{name}' is not a database backup. Use 'keepr files remove'.")
-        raise typer.Exit(1)
-
-    if not force and not typer.confirm(f"  Remove '{name}'?", default=False):
-        raise typer.Exit(0)
-
-    del data["jobs"][name]
-    save_config_raw(data, path)
-    output.success(f"Removed: {name}")
-
-
-@db_app.command("list")
-def db_list(config: ConfigOption = None):
-    """List database backups."""
-    output.header()
-
-    cfg = _load(config)
-    db_jobs = {n: j for n, j in cfg.jobs.items() if j.type == "database"}
-
-    if not db_jobs:
-        output.warning("No database backups configured.")
-        raise typer.Exit(0)
-
-    table = output.make_table("Name", "Engine", "Database", "Connection", "Destinations")
-    for name, job in db_jobs.items():
-        server = cfg.servers.get(job.server)
-        db_name = job.database.name or job.database.path or ""
-        if server and server.is_local:
-            conn = f"direct ({job.database.host})" if job.database.host != "localhost" else "local"
-        else:
-            conn = f"SSH ({job.server})"
-        dests = ", ".join(d.value for d in cfg.get_destinations(job))
-        table.add_row(name, job.engine, db_name, conn, dests)
-
-    output.console.print(table)
+    output.console.print()
+    job_count = len(data["jobs"])
+    output.success(f"Setup complete! {job_count} job(s) configured.")
+    output.info(f"Config saved: {target}")
+    if job_count > 0:
+        output.info("Run 'keepr run' to start backing up.")
+    else:
+        output.info("Run 'keepr job add <name>' to add a backup job.")
 
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# keepr files add/remove/list
+# keepr job add/remove/list
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-@files_app.command("add")
-def files_add(
-    name: Annotated[str, typer.Argument(help="Backup name")],
+@job_app.command("add")
+def job_add(
+    name: Annotated[str, typer.Argument(help="Job name")],
     config: ConfigOption = None,
 ):
-    """Add a file/directory backup."""
+    """Add a backup job."""
     output.header()
 
     data, path = _load_raw(config)
@@ -225,72 +140,24 @@ def files_add(
     data.setdefault("jobs", {})
 
     if name in data["jobs"]:
-        output.error(f"'{name}' already exists.")
+        output.error(f"'{name}' already exists. Use 'keepr job remove {name}' first.")
         raise typer.Exit(1)
 
-    # Server selection (files always need a server context)
-    servers = data.get("servers", {})
-    output.console.print()
-    output.info("Where are the files?")
-    output.info("  1) This machine (local)")
-    output.info("  2) Remote server (SSH)")
-    where = _prompt_choice("Select", ["1", "2"], default="1")
-
-    if where == "1":
-        server_name = "local"
-        ssh = False
-    else:
-        server_name = _prompt_server_selection(data, path)
-        ssh = True
-
-    # Paths
-    paths_input = typer.prompt("  Directories to backup (comma-separated)")
-    paths = [p.strip() for p in paths_input.split(",")]
-
-    exclude_input = typer.prompt("  Exclude patterns (optional)", default="")
-    exclude = [e.strip() for e in exclude_input.split(",") if e.strip()]
-
-    files_data: dict = {"paths": paths}
-    if exclude:
-        files_data["exclude"] = exclude
-
-    dests = _prompt_destinations(data, path, ssh=ssh)
-
-    job_data: dict = {
-        "server": server_name,
-        "type": "files",
-        "files": files_data,
-        "destinations": dests,
-    }
-
-    # Retention
-    if typer.confirm("  Custom retention?", default=False):
-        retention = {}
-        for d in dests:
-            key = f"keep_{d}"
-            val = typer.prompt(f"    {key}", default="7")
-            retention[key] = int(val)
-        job_data["retention"] = retention
-
-    data["jobs"][name] = job_data
+    _prompt_job(data, name)
     save_config_raw(data, path)
 
-    output.success(f"Added: {name} (files @ {server_name})")
 
-
-@files_app.command("remove")
-def files_remove(
-    name: Annotated[str, typer.Argument(help="Backup name")],
+@job_app.command("remove")
+def job_remove(
+    name: Annotated[str, typer.Argument(help="Job name")],
     force: Annotated[bool, typer.Option("--force", "-f")] = False,
     config: ConfigOption = None,
 ):
-    """Remove a file backup."""
+    """Remove a backup job."""
     output.header()
 
     data, path = _load_raw(config)
-    jobs = data.get("jobs", {})
-
-    if name not in jobs:
+    if name not in data.get("jobs", {}):
         output.error(f"'{name}' not found.")
         raise typer.Exit(1)
 
@@ -302,25 +169,23 @@ def files_remove(
     output.success(f"Removed: {name}")
 
 
-@files_app.command("list")
-def files_list(config: ConfigOption = None):
-    """List file backups."""
+@job_app.command("list")
+def job_list(config: ConfigOption = None):
+    """List backup jobs."""
     output.header()
 
     cfg = _load(config)
-    file_jobs = {n: j for n, j in cfg.jobs.items() if j.type == "files"}
-
-    if not file_jobs:
-        output.warning("No file backups configured.")
+    if not cfg.jobs:
+        output.warning("No jobs configured.")
         raise typer.Exit(0)
 
-    table = output.make_table("Name", "Paths", "Server", "Destinations")
-    for name, job in file_jobs.items():
-        paths = ", ".join(job.files.paths)
-        server = cfg.servers.get(job.server)
-        srv = "local" if server and server.is_local else job.server
+    table = output.make_table("Name", "Type", "Engine", "Server", "Destinations")
+    for name, job in cfg.jobs.items():
+        engine = job.engine or "-"
         dests = ", ".join(d.value for d in cfg.get_destinations(job))
-        table.add_row(name, paths, srv, dests)
+        server = cfg.servers.get(job.server)
+        srv_display = "local" if server and server.is_local else job.server
+        table.add_row(name, job.type_label, engine, srv_display, dests)
 
     output.console.print(table)
 
@@ -332,10 +197,10 @@ def files_list(config: ConfigOption = None):
 @server_app.command("add")
 def server_add(
     name: Annotated[str, typer.Argument(help="Server name")],
-    host: Annotated[str, typer.Option("--host", "-H", help="Hostname or IP")] = "",
-    user: Annotated[str, typer.Option("--user", "-u", help="SSH user")] = "root",
-    port: Annotated[int, typer.Option("--port", "-p", help="SSH port")] = 22,
-    ssh_key: Annotated[Optional[str], typer.Option("--ssh-key", help="SSH key path")] = None,
+    host: Annotated[str, typer.Option("--host", "-H")] = "",
+    user: Annotated[str, typer.Option("--user", "-u")] = "root",
+    port: Annotated[int, typer.Option("--port", "-p")] = 22,
+    ssh_key: Annotated[Optional[str], typer.Option("--ssh-key")] = None,
     config: ConfigOption = None,
 ):
     """Add an SSH server."""
@@ -373,17 +238,13 @@ def server_remove(
     output.header()
 
     data, path = _load_raw(config)
-    servers = data.get("servers", {})
-
-    if name not in servers:
+    if name not in data.get("servers", {}):
         output.error(f"Server '{name}' not found.")
         raise typer.Exit(1)
-
     if name == "local":
         output.error("Cannot remove 'local' server.")
         raise typer.Exit(1)
 
-    # Check usage
     jobs = data.get("jobs", {})
     using = [j for j, jcfg in jobs.items() if jcfg.get("server") == name]
     if using:
@@ -417,218 +278,18 @@ def server_list(config: ConfigOption = None):
 
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# Shared prompts
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-def _prompt_choice(label: str, options: list[str], default: str) -> str:
-    result = typer.prompt(f"  {label} ({'/'.join(options)})", default=default)
-    if result not in options:
-        output.error(f"Invalid choice: {result}")
-        raise typer.Exit(1)
-    return result
-
-
-def _prompt_server_selection(data: dict, path: Path) -> str:
-    """Show server list with option to add new. Returns server name."""
-    servers = data.get("servers", {})
-    remote_servers = {n: s for n, s in servers.items() if s.get("host") not in ("localhost", "127.0.0.1")}
-
-    output.console.print()
-    choices = []
-    for i, (name, srv) in enumerate(remote_servers.items(), 1):
-        host = srv.get("host", "")
-        user = srv.get("user", "root")
-        output.info(f"  {i}) {name} ({user}@{host})")
-        choices.append(name)
-
-    new_idx = len(choices) + 1
-    output.info(f"  {new_idx}) + Add new server")
-
-    choice = typer.prompt("  Select server", default="1")
-
-    try:
-        idx = int(choice)
-        if idx == new_idx:
-            # Create new server inline
-            return _create_server_inline(data, path)
-        elif 1 <= idx <= len(choices):
-            return choices[idx - 1]
-    except ValueError:
-        # Maybe they typed the server name directly
-        if choice in servers:
-            return choice
-
-    output.error("Invalid choice.")
-    raise typer.Exit(1)
-
-
-def _create_server_inline(data: dict, path: Path) -> str:
-    """Create a new server during db/files add."""
-    name = typer.prompt("  Server name")
-    host = typer.prompt("  Host")
-    user = typer.prompt("  SSH user", default="root")
-    port = int(typer.prompt("  SSH port", default="22"))
-    ssh_key = typer.prompt("  SSH key (optional)", default="")
-
-    server_data: dict = {"host": host, "user": user, "port": port}
-    if ssh_key:
-        server_data["ssh_key"] = ssh_key
-
-    data.setdefault("servers", {})
-    data["servers"][name] = server_data
-    save_config_raw(data, path)
-    output.success(f"Server added: {name} ({user}@{host}:{port})")
-    return name
-
-
-def _prompt_destinations(data: dict, path: Path, ssh: bool) -> list[str]:
-    """Prompt for backup destinations. Shows server option only if SSH."""
-    output.console.print()
-    output.info("Where to save the backup?")
-
-    if ssh:
-        options = [
-            ("1", "local", "this machine ~/backups/"),
-            ("2", "s3", "upload to S3 bucket"),
-            ("3", "server", "keep on server disk"),
-            ("4", "local + s3", None),
-            ("5", "server + s3", None),
-            ("6", "local + server + s3", None),
-        ]
-    else:
-        options = [
-            ("1", "local", "this machine ~/backups/"),
-            ("2", "s3", "upload to S3 bucket"),
-            ("3", "local + s3", None),
-        ]
-
-    for num, label, desc in options:
-        if desc:
-            output.info(f"  {num}) {label} — {desc}")
-        else:
-            output.info(f"  {num}) {label}")
-
-    choice = typer.prompt("  Select", default="1")
-
-    dest_map = {num: label for num, label, _ in options}
-    selected = dest_map.get(choice)
-    if not selected:
-        output.error("Invalid choice.")
-        raise typer.Exit(1)
-
-    dests = [d.strip() for d in selected.split("+")]
-
-    # S3 setup if needed
-    if "s3" in dests:
-        _ensure_s3_configured(data, path)
-
-    return dests
-
-
-def _ensure_s3_configured(data: dict, path: Path) -> None:
-    """If S3 is not configured, prompt for setup."""
-    storage = data.get("storage", {})
-    if storage.get("s3"):
-        return  # Already configured
-
-    output.console.print()
-    output.warning("S3 is not configured yet. Let's set it up:")
-
-    bucket = typer.prompt("  S3 bucket")
-    region = typer.prompt("  Region", default="eu-central-1")
-    prefix = typer.prompt("  Prefix", default="keepr/")
-    access_key = typer.prompt("  Access Key ID (empty = from env)", default="", show_default=False)
-    secret_key = typer.prompt("  Secret Access Key (empty = from env)", default="", show_default=False)
-    endpoint = typer.prompt("  Endpoint URL (for MinIO, optional)", default="")
-
-    s3_data: dict = {"bucket": bucket, "region": region, "prefix": prefix}
-    if access_key:
-        s3_data["access_key_id"] = access_key
-    if secret_key:
-        s3_data["secret_access_key"] = secret_key
-    if endpoint:
-        s3_data["endpoint_url"] = endpoint
-
-    data.setdefault("storage", {})
-    data["storage"]["s3"] = s3_data
-    save_config_raw(data, path)
-    output.success("S3 configured.")
-
-
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 # Core commands
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 @app.command()
-def init():
-    """Create config file."""
-    output.header()
-
-    target = Path.home() / ".config" / "keepr" / "keepr.yml"
-    if target.exists():
-        output.warning(f"Config already exists: {target}")
-        overwrite = typer.confirm("  Overwrite?", default=False)
-        if not overwrite:
-            raise typer.Exit(0)
-
-    target.parent.mkdir(parents=True, exist_ok=True)
-    target.write_text(_default_config())
-
-    output.success(f"Config created: {target}")
-    output.info("Get started:")
-    output.info("  keepr db add my-db")
-    output.info("  keepr files add my-files")
-
-
-@app.command("config")
-def show_config(config: ConfigOption = None):
-    """Show current configuration."""
-    output.header()
-
-    cfg = _load(config)
-
-    output.success("Config is valid.\n")
-
-    output.info(f"Local dir:  {cfg.storage.resolved_local_dir}")
-    output.info(f"Server dir: {cfg.storage.server_dir}")
-    if cfg.storage.s3:
-        output.info(f"S3 bucket:  {cfg.storage.s3.bucket} ({cfg.storage.s3.region})")
-    else:
-        output.info("S3:         not configured")
-
-    r = cfg.defaults.retention
-    output.info(f"Retention:  local={r.keep_local}, s3={r.keep_s3}, server={r.keep_server}")
-
-    # Servers
-    remote = {n: s for n, s in cfg.servers.items() if not s.is_local}
-    if remote:
-        output.console.print()
-        output.info(f"SSH Servers: {len(remote)}")
-        for name, srv in remote.items():
-            output.info(f"  {name}: {srv.user}@{srv.host}:{srv.port}")
-
-    # Jobs
-    if cfg.jobs:
-        output.console.print()
-        output.info(f"Backups: {len(cfg.jobs)}")
-        for name, job in cfg.jobs.items():
-            engine = job.engine or "files"
-            dests = ", ".join(d.value for d in cfg.get_destinations(job))
-            output.info(f"  {name}: {job.type} ({engine}) -> \\[{dests}]")
-
-
-@app.command()
 def run(
-    job_names: Annotated[
-        Optional[list[str]], typer.Argument(help="Backup names to run")
-    ] = None,
-    all_jobs: Annotated[bool, typer.Option("--all", help="Run all")] = False,
-    dry_run: Annotated[bool, typer.Option("--dry-run", help="Preview only")] = False,
+    job_names: Annotated[Optional[list[str]], typer.Argument(help="Jobs to run")] = None,
+    all_jobs: Annotated[bool, typer.Option("--all")] = False,
+    dry_run: Annotated[bool, typer.Option("--dry-run")] = False,
     config: ConfigOption = None,
 ):
     """Run backups."""
     output.header()
-
     cfg = _load(config)
     from keepr.backup import run_backup
 
@@ -639,12 +300,11 @@ def run(
 
 @app.command("list")
 def list_backups(
-    job_name: Annotated[Optional[str], typer.Argument(help="Filter by name")] = None,
+    job_name: Annotated[Optional[str], typer.Argument(help="Filter by job")] = None,
     config: ConfigOption = None,
 ):
     """List taken backups."""
     output.header()
-
     from keepr.catalog import load_catalog
 
     _load(config)
@@ -659,8 +319,7 @@ def list_backups(
         raise typer.Exit(0)
 
     backups.sort(key=lambda b: b.timestamp, reverse=True)
-
-    table = output.make_table("ID", "Name", "Engine", "Date", "Size", "Locations")
+    table = output.make_table("ID", "Job", "Type", "Date", "Size", "Locations")
     for b in backups:
         locs = ", ".join(b.locations.keys())
         table.add_row(
@@ -668,7 +327,6 @@ def list_backups(
             b.timestamp.strftime("%Y-%m-%d %H:%M"),
             output.format_size(b.size_bytes), locs,
         )
-
     output.console.print(table)
 
 
@@ -693,7 +351,6 @@ def delete(
     """Delete a backup."""
     output.header()
     cfg = _load(config)
-
     from keepr.catalog import load_catalog, save_catalog
     from keepr.retention import delete_backup_files
 
@@ -716,14 +373,13 @@ def delete(
 
 @app.command()
 def cleanup(
-    job_name: Annotated[Optional[str], typer.Argument(help="Backup name")] = None,
+    job_name: Annotated[Optional[str], typer.Argument(help="Job name")] = None,
     dry_run: Annotated[bool, typer.Option("--dry-run")] = False,
     config: ConfigOption = None,
 ):
     """Apply retention policies."""
     output.header()
     cfg = _load(config)
-
     from keepr.retention import apply_retention
 
     names = [job_name] if job_name else list(cfg.jobs.keys())
@@ -732,6 +388,38 @@ def cleanup(
             output.error(f"Not found: {name}")
             continue
         apply_retention(cfg, name, cfg.jobs[name], dry_run=dry_run)
+
+
+@app.command("config")
+def show_config(config: ConfigOption = None):
+    """Show current configuration."""
+    output.header()
+    cfg = _load(config)
+
+    output.success("Config is valid.\n")
+    output.info(f"Local dir:  {cfg.storage.resolved_local_dir}")
+    output.info(f"Server dir: {cfg.storage.server_dir}")
+    if cfg.storage.s3:
+        output.info(f"S3 bucket:  {cfg.storage.s3.bucket} ({cfg.storage.s3.region})")
+    else:
+        output.info("S3:         not configured")
+
+    r = cfg.defaults.retention
+    output.info(f"Retention:  local={r.keep_local}, s3={r.keep_s3}, server={r.keep_server}")
+
+    remote = {n: s for n, s in cfg.servers.items() if not s.is_local}
+    if remote:
+        output.console.print()
+        output.info(f"SSH Servers: {len(remote)}")
+        for name, srv in remote.items():
+            output.info(f"  {name}: {srv.user}@{srv.host}:{srv.port}")
+
+    if cfg.jobs:
+        output.console.print()
+        output.info(f"Jobs: {len(cfg.jobs)}")
+        for name, job in cfg.jobs.items():
+            dests = ", ".join(d.value for d in cfg.get_destinations(job))
+            output.info(f"  {name}: {job.type_label} -> \\[{dests}]")
 
 
 @app.command()
@@ -750,12 +438,248 @@ def cron(config: ConfigOption = None):
     output.console.print(f"  # 0 5 * * * {keepr_bin} cleanup >> /var/log/keepr.log 2>&1")
 
 
-# ── Helpers ───────────────────────────────────────────
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# Shared prompt helpers
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+def _prompt_job(data: dict, name: str | None) -> None:
+    """Interactive job creation. Mutates data dict."""
+    if not name:
+        name = typer.prompt("    Name")
+
+    if name in data.get("jobs", {}):
+        output.error(f"'{name}' already exists.")
+        raise typer.Exit(1)
+
+    # Server selection
+    server_name = _prompt_server_for_job(data)
+    server = data["servers"][server_name]
+    is_ssh = server.get("host") not in ("localhost", "127.0.0.1")
+
+    job_data: dict = {"server": server_name}
+
+    # What to backup
+    output.console.print()
+    output.info("What to backup?")
+    output.info("  1) Database")
+    output.info("  2) Files")
+    output.info("  3) Database + Files")
+    what = _prompt_choice("Select", ["1", "2", "3"], default="1")
+
+    # Database
+    if what in ("1", "3"):
+        output.console.print()
+        output.info("[bold]-- Database --[/bold]")
+        engine = _prompt_choice("Engine", ENGINES, default="postgres")
+        job_data["engine"] = engine
+
+        db: dict = {}
+        if engine == "sqlite":
+            db["path"] = typer.prompt("    Path")
+        else:
+            if not is_ssh:
+                # Direct connection — ask for DB host
+                output.info("Connection: direct (dump runs here)")
+                db["host"] = typer.prompt("    DB host")
+                job_data["connection"] = "direct"
+            else:
+                # SSH — DB host is on the server
+                output.info("Connection: SSH (dump runs on server)")
+                db["host"] = typer.prompt("    DB host (on server)", default="localhost")
+                job_data["connection"] = "ssh"
+
+            default_port = "5432" if engine == "postgres" else "3306"
+            db["port"] = int(typer.prompt("    DB port", default=default_port))
+            db["name"] = typer.prompt("    DB name")
+            default_user = "postgres" if engine == "postgres" else "root"
+            db["user"] = typer.prompt("    DB user", default=default_user)
+            password = typer.prompt("    DB password (empty = skip)", default="", show_default=False)
+            if password:
+                db["password"] = password
+            extra = typer.prompt("    Extra dump args (optional)", default="")
+            if extra:
+                db["extra_args"] = extra
+
+        job_data["database"] = db
+
+    # Files
+    if what in ("2", "3"):
+        output.console.print()
+        output.info("[bold]-- Files --[/bold]")
+        paths_input = typer.prompt("    Directories (comma-separated)")
+        paths = [p.strip() for p in paths_input.split(",")]
+        exclude_input = typer.prompt("    Exclude patterns (optional)", default="")
+        exclude = [e.strip() for e in exclude_input.split(",") if e.strip()]
+
+        files_data: dict = {"paths": paths}
+        if exclude:
+            files_data["exclude"] = exclude
+        job_data["files"] = files_data
+
+    # Destinations
+    dests = _prompt_destinations(data, is_ssh)
+    job_data["destinations"] = dests
+
+    # Retention
+    if typer.confirm("    Custom retention?", default=False):
+        retention = {}
+        for d in dests:
+            key = f"keep_{d}"
+            val = typer.prompt(f"      {key}", default="7")
+            retention[key] = int(val)
+        job_data["retention"] = retention
+
+    data.setdefault("jobs", {})
+    data["jobs"][name] = job_data
+    output.success(f"Job added: {name} ({job_data.get('engine', 'files')})")
+
+
+def _prompt_server_for_job(data: dict) -> str:
+    """Select server for a job — local, existing, or new."""
+    servers = data.get("servers", {})
+    remote = {n: s for n, s in servers.items() if s.get("host") not in ("localhost", "127.0.0.1")}
+
+    output.console.print()
+    output.info("Server:")
+    idx = 1
+    choices: list[str] = []
+
+    for name, srv in remote.items():
+        host = srv.get("host", "")
+        user = srv.get("user", "root")
+        output.info(f"  {idx}) {name} ({user}@{host})")
+        choices.append(name)
+        idx += 1
+
+    output.info(f"  {idx}) local (this machine)")
+    local_idx = idx
+    idx += 1
+
+    output.info(f"  {idx}) + Add new server")
+    new_idx = idx
+
+    default = "1" if remote else str(local_idx)
+    choice = typer.prompt("    Select", default=default)
+
+    try:
+        c = int(choice)
+        if c == local_idx:
+            return "local"
+        if c == new_idx:
+            return _create_server_inline(data)
+        if 1 <= c <= len(choices):
+            return choices[c - 1]
+    except ValueError:
+        if choice in servers:
+            return choice
+
+    output.error("Invalid choice.")
+    raise typer.Exit(1)
+
+
+def _create_server_inline(data: dict) -> str:
+    """Create a new server inline during job setup."""
+    name = typer.prompt("    Server name")
+    host = typer.prompt("    Host")
+    user = typer.prompt("    SSH user", default="root")
+    port = int(typer.prompt("    SSH port", default="22"))
+    ssh_key = typer.prompt("    SSH key (optional)", default="")
+
+    srv: dict = {"host": host, "user": user, "port": port}
+    if ssh_key:
+        srv["ssh_key"] = ssh_key
+
+    data.setdefault("servers", {})
+    data["servers"][name] = srv
+    output.success(f"Server added: {name} ({user}@{host}:{port})")
+    return name
+
+
+def _prompt_destinations(data: dict, ssh: bool) -> list[str]:
+    """Prompt for backup destinations."""
+    output.console.print()
+    output.info("Where to save?")
+
+    if ssh:
+        options = [
+            ("1", "local", "this machine ~/backups/"),
+            ("2", "s3", "upload to S3"),
+            ("3", "server", "keep on server disk"),
+            ("4", "local + s3", None),
+            ("5", "server + s3", None),
+            ("6", "local + server + s3", None),
+        ]
+    else:
+        options = [
+            ("1", "local", "this machine ~/backups/"),
+            ("2", "s3", "upload to S3"),
+            ("3", "local + s3", None),
+        ]
+
+    for num, label, desc in options:
+        if desc:
+            output.info(f"  {num}) {label} — {desc}")
+        else:
+            output.info(f"  {num}) {label}")
+
+    choice = typer.prompt("    Select", default="1")
+    dest_map = {num: label for num, label, _ in options}
+    selected = dest_map.get(choice)
+    if not selected:
+        output.error("Invalid choice.")
+        raise typer.Exit(1)
+
+    dests = [d.strip() for d in selected.split("+")]
+
+    if "s3" in dests:
+        _ensure_s3(data)
+
+    return dests
+
+
+def _ensure_s3(data: dict) -> None:
+    """Prompt for S3 config if not set."""
+    if data.get("storage", {}).get("s3"):
+        return
+
+    output.console.print()
+    output.warning("S3 is not configured yet. Let's set it up:")
+    data.setdefault("storage", {})
+    data["storage"]["s3"] = _prompt_s3_config()
+    output.success("S3 configured.")
+
+
+def _prompt_s3_config() -> dict:
+    """Prompt for S3 config fields and return dict."""
+    bucket = typer.prompt("    S3 bucket")
+    region = typer.prompt("    Region", default="eu-central-1")
+    prefix = typer.prompt("    Prefix", default="keepr/")
+    access_key = typer.prompt("    Access Key ID (empty = from env)", default="", show_default=False)
+    secret_key = typer.prompt("    Secret Access Key (empty = from env)", default="", show_default=False)
+    endpoint = typer.prompt("    Endpoint URL (optional, for MinIO)", default="")
+
+    s3: dict = {"bucket": bucket, "region": region, "prefix": prefix}
+    if access_key:
+        s3["access_key_id"] = access_key
+    if secret_key:
+        s3["secret_access_key"] = secret_key
+    if endpoint:
+        s3["endpoint_url"] = endpoint
+    return s3
+
+
+def _prompt_choice(label: str, options: list[str], default: str) -> str:
+    result = typer.prompt(f"    {label} ({'/'.join(options)})", default=default)
+    if result not in options:
+        output.error(f"Invalid choice: {result}")
+        raise typer.Exit(1)
+    return result
+
 
 def _resolve_jobs(cfg: KeeprConfig, names: list[str] | None, all_jobs: bool) -> list[str]:
     if all_jobs or not names:
         if not cfg.jobs:
-            output.warning("No backups configured.")
+            output.warning("No jobs configured.")
             raise typer.Exit(0)
         return list(cfg.jobs.keys())
     for n in names:
@@ -763,25 +687,3 @@ def _resolve_jobs(cfg: KeeprConfig, names: list[str] | None, all_jobs: bool) -> 
             output.error(f"Not found: {n}")
             raise typer.Exit(1)
     return names
-
-
-def _default_config() -> str:
-    return """\
-storage:
-  local_dir: ~/backups
-  server_dir: /var/backups/keepr
-
-defaults:
-  retention:
-    keep_local: 7
-    keep_s3: 30
-    keep_server: 5
-  destinations:
-    - local
-
-servers:
-  local:
-    host: localhost
-
-jobs: {}
-"""

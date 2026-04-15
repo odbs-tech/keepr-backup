@@ -13,7 +13,7 @@ Database & file backup manager CLI tool.
 
 ```
 keepr/
-├── cli.py          # Typer CLI — db/files/server sub-apps + core commands
+├── cli.py          # Typer CLI — init wizard, job/server sub-apps, core commands
 ├── config.py       # Pydantic models, YAML load/save
 ├── executor.py     # Local + SSH command execution (subprocess)
 ├── backup.py       # Backup orchestration (DB dump + tar)
@@ -31,18 +31,19 @@ keepr/
 
 ## Key concepts
 
-- **Connection types**: Direct (pg_dump runs locally, connects to remote DB) vs SSH (pg_dump runs on server via SSH)
+- **Jobs** can have `database`, `files`, or both — no separate `type` field
+- **Connection**: direct (dump runs locally) vs SSH (dump runs on server) — determined by server choice
 - **Destinations**: `local` (keepr's machine), `server` (remote disk, SSH only), `s3`
-- **Servers**: SSH connection profiles, managed via `keepr server add` or created inline during `keepr db add`
-- **Jobs**: Backup definitions stored in config under `jobs:` key. Created via `keepr db add` or `keepr files add`
+- **Servers**: SSH connection profiles, created via `keepr server add` or inline during job setup
+- **Init wizard**: `keepr init` walks through storage, servers, and jobs interactively
 
 ## Commands
 
 ```
-keepr db add/list/remove      # Database backup management
-keepr files add/list/remove   # File backup management
-keepr server add/list/remove  # SSH server management
-keepr run/list/restore/delete/cleanup/cron/config/init
+keepr init                        # Interactive setup wizard
+keepr job add/list/remove         # Job management
+keepr server add/list/remove      # SSH server management
+keepr run/list/restore/delete/cleanup/cron/config
 ```
 
 ## Development
@@ -52,15 +53,4 @@ python3 -m venv .venv
 source .venv/bin/activate
 pip install -e ".[dev]"
 keepr --help
-```
-
-## Testing
-
-```bash
-# Quick local test with SQLite
-keepr init
-keepr db add test-db   # choose sqlite, local
-keepr run test-db
-keepr list
-keepr restore <ID>
 ```

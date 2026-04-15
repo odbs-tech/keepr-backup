@@ -81,24 +81,36 @@ class FilesConfig(BaseModel):
 
 class JobConfig(BaseModel):
     server: str
-    type: Literal["database", "files"]
     engine: str | None = None  # postgres | mysql | sqlite
     database: DatabaseConfig | None = None
     files: FilesConfig | None = None
+    connection: str | None = None  # "direct" | "ssh" — for display only
     destinations: list[Destination] | None = None
     retention: RetentionConfig | None = None
 
     @model_validator(mode="after")
     def validate_job(self):
-        if self.type == "database":
-            if self.database is None:
-                raise ValueError("'database' config is required for database jobs")
-            if self.engine is None:
-                raise ValueError("'engine' is required for database jobs")
-        elif self.type == "files":
-            if self.files is None:
-                raise ValueError("'files' config is required for file jobs")
+        if not self.database and not self.files:
+            raise ValueError("At least one of 'database' or 'files' is required")
+        if self.database and not self.engine:
+            raise ValueError("'engine' is required when 'database' is set")
         return self
+
+    @property
+    def has_database(self) -> bool:
+        return self.database is not None
+
+    @property
+    def has_files(self) -> bool:
+        return self.files is not None
+
+    @property
+    def type_label(self) -> str:
+        if self.has_database and self.has_files:
+            return "database + files"
+        if self.has_database:
+            return "database"
+        return "files"
 
 
 class KeeprConfig(BaseModel):

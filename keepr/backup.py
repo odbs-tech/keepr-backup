@@ -29,14 +29,14 @@ def run_backup(
     destinations = cfg.get_destinations(job)
     executor = Executor(server)
 
-    output.info(f"Running job: [bold]{job_name}[/bold]")
+    output.info(f"Running job: [bold]{job_name}[/bold] ({job.type_label})")
 
     srv_display = "localhost" if server.is_local else f"{server.user}@{server.host}"
     output.info(f"Server: {job.server} ({srv_display})")
 
-    if job.type == "database":
+    if job.has_database:
         _run_database_backup(cfg, job_name, job, executor, destinations, dry_run)
-    elif job.type == "files":
+    if job.has_files:
         _run_files_backup(cfg, job_name, job, executor, destinations, dry_run)
 
     output.console.print()
