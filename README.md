@@ -16,12 +16,26 @@ Backup PostgreSQL, MySQL, and SQLite databases alongside file directories — or
 - **Restore support** — Restore any backup from any destination
 - **Cron ready** — Generate crontab entries for scheduled backups
 
+## Installation
+
+```bash
+# With pipx (recommended)
+pipx install git+https://github.com/odbs-tech/keepr-backup.git
+
+# Or from source
+git clone https://github.com/odbs-tech/keepr-backup.git
+cd keepr-backup
+pip install -e .
+```
+
+Update:
+```bash
+pipx upgrade keepr
+```
+
 ## Quick Start
 
 ```bash
-# Install
-pip install -e .
-
 # Interactive setup — walks you through everything
 keepr init
 ```
