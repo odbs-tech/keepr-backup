@@ -30,7 +30,7 @@ pip install -e .
 
 Update:
 ```bash
-pipx upgrade keepr
+pipx install --force git+https://github.com/odbs-tech/keepr-backup.git
 ```
 
 ## Quick Start
@@ -38,6 +38,18 @@ pipx upgrade keepr
 ```bash
 # Interactive setup — walks you through everything
 keepr init
+
+# After setup, just run keepr to see status
+keepr
+```
+
+```
+  keepr v1.1.0
+
+  [>] 2 jobs configured
+  [>] Last backup: my-db — 3h ago
+
+  keepr run · keepr list · keepr job add <name>
 ```
 
 The setup wizard guides you through:
@@ -96,15 +108,40 @@ Same interactive flow — pick server, choose database/files/both, set destinati
 
 ### Setup & config
 ```
-keepr init                    Interactive setup wizard
-keepr config                  Show current configuration
+keepr init                         Interactive setup wizard
+keepr config                       Show current configuration
+keepr config show                  Same as above
+keepr config set <key> <value>     Update a config value
+```
+
+Config keys:
+```
+local-dir      Local backup directory (default: ~/backups)
+server-dir     Remote server backup directory
+keep-local     Number of local backups to keep (default: 7)
+keep-s3        Number of S3 backups to keep (default: 30)
+keep-server    Number of server backups to keep (default: 5)
+```
+
+Example:
+```bash
+keepr config set local-dir ~/Desktop/backups
+keepr config set keep-local 14
 ```
 
 ### Job management
 ```
-keepr job add <name>          Add a backup job (interactive)
-keepr job list                List all jobs
-keepr job remove <name>       Remove a job
+keepr job add <name>               Add a backup job (interactive)
+keepr job list                     List all jobs
+keepr job rename <old> <new>       Rename a job
+keepr job remove <name>...         Remove one or more jobs
+```
+
+Examples:
+```bash
+keepr job rename my-db production-db
+keepr job remove old-job
+keepr job remove job1 job2 job3    # bulk delete
 ```
 
 ### Server management
