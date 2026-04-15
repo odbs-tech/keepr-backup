@@ -1,0 +1,111 @@
+# keepr — Database & file backup manager
+# Config file: ~/.config/keepr/keepr.yml
+
+storage:
+  local_dir: ~/backups                    # Where backups are saved locally
+  server_dir: /var/backups/keepr          # Where backups are saved on remote servers
+  s3:
+    bucket: my-backups
+    region: eu-central-1
+    prefix: keepr/
+    # access_key_id: ...                  # Or set AWS_ACCESS_KEY_ID env var
+    # secret_access_key: ...              # Or set AWS_SECRET_ACCESS_KEY env var
+    # endpoint_url: ...                   # For MinIO or S3-compatible storage
+
+defaults:
+  retention:
+    keep_local: 7                         # Keep last 7 local backups per job
+    keep_s3: 30                           # Keep last 30 S3 backups per job
+    keep_server: 5                        # Keep last 5 server backups per job
+  destinations:
+    - local
+    - s3
+
+# ──────────────────────────────────────────
+# Servers
+# ──────────────────────────────────────────
+servers:
+  local:
+    host: localhost
+
+  production:
+    host: 159.69.42.100
+    user: root
+    port: 22
+    # ssh_key: ~/.ssh/id_rsa
+
+  staging:
+    host: 10.0.0.50
+    user: deploy
+    port: 22
+
+# ──────────────────────────────────────────
+# Backup Jobs
+# ──────────────────────────────────────────
+jobs:
+
+  # PostgreSQL — remote server, save locally + S3
+  app-db:
+    server: production
+    type: database
+    engine: postgres
+    database:
+      name: myapp
+      user: postgres
+      host: localhost
+      port: 5432
+      extra_args: "--no-owner"
+    destinations: [local, s3]
+    retention:
+      keep_local: 3
+      keep_s3: 14
+
+  # MySQL — remote server, save locally + S3
+  blog-db:
+    server: production
+    type: database
+    engine: mysql
+    database:
+      name: blog
+      user: blog_user
+      # password: secret                  # Or set MYSQL_PWD env var
+      host: localhost
+      port: 3306
+    destinations: [local, s3]
+
+  # SQLite — local machine
+  dev-db:
+    server: local
+    type: database
+    engine: sqlite
+    database:
+      path: /path/to/app.db
+    destinations: [local]
+    retention:
+      keep_local: 3
+
+  # File backup — remote server uploads directory
+  uploads:
+    server: production
+    type: files
+    files:
+      paths:
+        - /var/www/app/shared/storage/uploads
+      exclude:
+        - "*.tmp"
+        - ".cache"
+        - "thumbs/"
+    destinations: [local, s3]
+
+  # Large DB — keep on server + S3, don't download
+  warehouse-db:
+    server: production
+    type: database
+    engine: postgres
+    database:
+      name: warehouse
+      user: postgres
+    destinations: [server, s3]
+    retention:
+      keep_server: 3
+      keep_s3: 30
