@@ -92,10 +92,10 @@ def db_add(
     else:
         # Connection type
         output.console.print()
-        output.info("Baglanti yontemi:")
-        output.info("  1) Direkt — pg_dump/mysqldump burada calisir, DB'ye uzaktan baglanir")
-        output.info("  2) SSH — sunucuya baglanip orada dump calistirir")
-        conn = _prompt_choice("Sec", ["1", "2"], default="1")
+        output.info("Connection method:")
+        output.info("  1) Direct — pg_dump/mysqldump runs here, connects to DB remotely")
+        output.info("  2) SSH — connects to server and runs dump there")
+        conn = _prompt_choice("Select", ["1", "2"], default="1")
 
         if conn == "1":
             # Direct connection
@@ -105,10 +105,10 @@ def db_add(
             db["name"] = typer.prompt("  DB name")
             default_user = "postgres" if engine == "postgres" else "root"
             db["user"] = typer.prompt("  DB user", default=default_user)
-            password = typer.prompt("  DB password (bos = atla)", default="", show_default=False)
+            password = typer.prompt("  DB password (empty = skip)", default="", show_default=False)
             if password:
                 db["password"] = password
-            extra = typer.prompt("  Extra dump args (opsiyonel)", default="")
+            extra = typer.prompt("  Extra dump args (optional)", default="")
             if extra:
                 db["extra_args"] = extra
 
@@ -118,16 +118,16 @@ def db_add(
         else:
             # SSH connection
             server_name = _prompt_server_selection(data, path)
-            db["host"] = typer.prompt("  DB host (sunucu uzerinde)", default="localhost")
+            db["host"] = typer.prompt("  DB host (on server)", default="localhost")
             default_port = "5432" if engine == "postgres" else "3306"
             db["port"] = int(typer.prompt("  DB port", default=default_port))
             db["name"] = typer.prompt("  DB name")
             default_user = "postgres" if engine == "postgres" else "root"
             db["user"] = typer.prompt("  DB user", default=default_user)
-            password = typer.prompt("  DB password (bos = atla)", default="", show_default=False)
+            password = typer.prompt("  DB password (empty = skip)", default="", show_default=False)
             if password:
                 db["password"] = password
-            extra = typer.prompt("  Extra dump args (opsiyonel)", default="")
+            extra = typer.prompt("  Extra dump args (optional)", default="")
             if extra:
                 db["extra_args"] = extra
 
@@ -199,7 +199,7 @@ def db_list(config: ConfigOption = None):
         server = cfg.servers.get(job.server)
         db_name = job.database.name or job.database.path or ""
         if server and server.is_local:
-            conn = f"direkt ({job.database.host})" if job.database.host != "localhost" else "lokal"
+            conn = f"direct ({job.database.host})" if job.database.host != "localhost" else "local"
         else:
             conn = f"SSH ({job.server})"
         dests = ", ".join(d.value for d in cfg.get_destinations(job))
@@ -231,10 +231,10 @@ def files_add(
     # Server selection (files always need a server context)
     servers = data.get("servers", {})
     output.console.print()
-    output.info("Dosyalar nerede?")
-    output.info("  1) Bu makine (lokal)")
-    output.info("  2) Uzak sunucu (SSH)")
-    where = _prompt_choice("Sec", ["1", "2"], default="1")
+    output.info("Where are the files?")
+    output.info("  1) This machine (local)")
+    output.info("  2) Remote server (SSH)")
+    where = _prompt_choice("Select", ["1", "2"], default="1")
 
     if where == "1":
         server_name = "local"
@@ -244,10 +244,10 @@ def files_add(
         ssh = True
 
     # Paths
-    paths_input = typer.prompt("  Backup alinacak dizinler (virgul ile)")
+    paths_input = typer.prompt("  Directories to backup (comma-separated)")
     paths = [p.strip() for p in paths_input.split(",")]
 
-    exclude_input = typer.prompt("  Haric tutulacak pattern'ler (opsiyonel)", default="")
+    exclude_input = typer.prompt("  Exclude patterns (optional)", default="")
     exclude = [e.strip() for e in exclude_input.split(",") if e.strip()]
 
     files_data: dict = {"paths": paths}
@@ -318,7 +318,7 @@ def files_list(config: ConfigOption = None):
     for name, job in file_jobs.items():
         paths = ", ".join(job.files.paths)
         server = cfg.servers.get(job.server)
-        srv = "lokal" if server and server.is_local else job.server
+        srv = "local" if server and server.is_local else job.server
         dests = ", ".join(d.value for d in cfg.get_destinations(job))
         table.add_row(name, paths, srv, dests)
 
@@ -352,7 +352,7 @@ def server_add(
         host = typer.prompt("  Host")
     user = typer.prompt("  SSH user", default=user)
     port = int(typer.prompt("  SSH port", default=str(port)))
-    ssh_key_input = typer.prompt("  SSH key (opsiyonel)", default=ssh_key or "")
+    ssh_key_input = typer.prompt("  SSH key (optional)", default=ssh_key or "")
 
     server_data: dict = {"host": host, "user": user, "port": port}
     if ssh_key_input:
@@ -387,7 +387,7 @@ def server_remove(
     jobs = data.get("jobs", {})
     using = [j for j, jcfg in jobs.items() if jcfg.get("server") == name]
     if using:
-        output.warning(f"Bu server'i kullanan job'lar: {', '.join(using)}")
+        output.warning(f"Jobs using this server: {', '.join(using)}")
 
     if not force and not typer.confirm(f"  Remove '{name}'?", default=False):
         raise typer.Exit(0)
@@ -423,7 +423,7 @@ def server_list(config: ConfigOption = None):
 def _prompt_choice(label: str, options: list[str], default: str) -> str:
     result = typer.prompt(f"  {label} ({'/'.join(options)})", default=default)
     if result not in options:
-        output.error(f"Gecersiz secim: {result}")
+        output.error(f"Invalid choice: {result}")
         raise typer.Exit(1)
     return result
 
@@ -442,9 +442,9 @@ def _prompt_server_selection(data: dict, path: Path) -> str:
         choices.append(name)
 
     new_idx = len(choices) + 1
-    output.info(f"  {new_idx}) + Yeni server ekle")
+    output.info(f"  {new_idx}) + Add new server")
 
-    choice = typer.prompt("  Server sec", default="1")
+    choice = typer.prompt("  Select server", default="1")
 
     try:
         idx = int(choice)
@@ -458,17 +458,17 @@ def _prompt_server_selection(data: dict, path: Path) -> str:
         if choice in servers:
             return choice
 
-    output.error("Gecersiz secim.")
+    output.error("Invalid choice.")
     raise typer.Exit(1)
 
 
 def _create_server_inline(data: dict, path: Path) -> str:
     """Create a new server during db/files add."""
-    name = typer.prompt("  Server ismi")
+    name = typer.prompt("  Server name")
     host = typer.prompt("  Host")
     user = typer.prompt("  SSH user", default="root")
     port = int(typer.prompt("  SSH port", default="22"))
-    ssh_key = typer.prompt("  SSH key (opsiyonel)", default="")
+    ssh_key = typer.prompt("  SSH key (optional)", default="")
 
     server_data: dict = {"host": host, "user": user, "port": port}
     if ssh_key:
@@ -477,28 +477,28 @@ def _create_server_inline(data: dict, path: Path) -> str:
     data.setdefault("servers", {})
     data["servers"][name] = server_data
     save_config_raw(data, path)
-    output.success(f"Server eklendi: {name} ({user}@{host}:{port})")
+    output.success(f"Server added: {name} ({user}@{host}:{port})")
     return name
 
 
 def _prompt_destinations(data: dict, path: Path, ssh: bool) -> list[str]:
     """Prompt for backup destinations. Shows server option only if SSH."""
     output.console.print()
-    output.info("Backup nereye kaydedilsin?")
+    output.info("Where to save the backup?")
 
     if ssh:
         options = [
-            ("1", "local", "bu makinede ~/backups/"),
-            ("2", "s3", "S3 bucket'a yukle"),
-            ("3", "server", "sunucunun diskinde birak"),
+            ("1", "local", "this machine ~/backups/"),
+            ("2", "s3", "upload to S3 bucket"),
+            ("3", "server", "keep on server disk"),
             ("4", "local + s3", None),
             ("5", "server + s3", None),
             ("6", "local + server + s3", None),
         ]
     else:
         options = [
-            ("1", "local", "bu makinede ~/backups/"),
-            ("2", "s3", "S3 bucket'a yukle"),
+            ("1", "local", "this machine ~/backups/"),
+            ("2", "s3", "upload to S3 bucket"),
             ("3", "local + s3", None),
         ]
 
@@ -508,12 +508,12 @@ def _prompt_destinations(data: dict, path: Path, ssh: bool) -> list[str]:
         else:
             output.info(f"  {num}) {label}")
 
-    choice = typer.prompt("  Sec", default="1")
+    choice = typer.prompt("  Select", default="1")
 
     dest_map = {num: label for num, label, _ in options}
     selected = dest_map.get(choice)
     if not selected:
-        output.error("Gecersiz secim.")
+        output.error("Invalid choice.")
         raise typer.Exit(1)
 
     dests = [d.strip() for d in selected.split("+")]
@@ -532,14 +532,14 @@ def _ensure_s3_configured(data: dict, path: Path) -> None:
         return  # Already configured
 
     output.console.print()
-    output.warning("S3 henuz ayarlanmamis. Simdi ayarlayalim:")
+    output.warning("S3 is not configured yet. Let's set it up:")
 
     bucket = typer.prompt("  S3 bucket")
     region = typer.prompt("  Region", default="eu-central-1")
     prefix = typer.prompt("  Prefix", default="keepr/")
-    access_key = typer.prompt("  Access Key ID (bos = env'den al)", default="", show_default=False)
-    secret_key = typer.prompt("  Secret Access Key (bos = env'den al)", default="", show_default=False)
-    endpoint = typer.prompt("  Endpoint URL (MinIO icin, opsiyonel)", default="")
+    access_key = typer.prompt("  Access Key ID (empty = from env)", default="", show_default=False)
+    secret_key = typer.prompt("  Secret Access Key (empty = from env)", default="", show_default=False)
+    endpoint = typer.prompt("  Endpoint URL (for MinIO, optional)", default="")
 
     s3_data: dict = {"bucket": bucket, "region": region, "prefix": prefix}
     if access_key:
@@ -552,7 +552,7 @@ def _ensure_s3_configured(data: dict, path: Path) -> None:
     data.setdefault("storage", {})
     data["storage"]["s3"] = s3_data
     save_config_raw(data, path)
-    output.success("S3 ayarlandi.")
+    output.success("S3 configured.")
 
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -575,9 +575,9 @@ def init():
     target.write_text(_default_config())
 
     output.success(f"Config created: {target}")
-    output.info("Baslangic:")
-    output.info("  keepr db add cortex-db")
-    output.info("  keepr files add uploads")
+    output.info("Get started:")
+    output.info("  keepr db add my-db")
+    output.info("  keepr files add my-files")
 
 
 @app.command("config")
@@ -594,7 +594,7 @@ def show_config(config: ConfigOption = None):
     if cfg.storage.s3:
         output.info(f"S3 bucket:  {cfg.storage.s3.bucket} ({cfg.storage.s3.region})")
     else:
-        output.info("S3:         ayarlanmamis")
+        output.info("S3:         not configured")
 
     r = cfg.defaults.retention
     output.info(f"Retention:  local={r.keep_local}, s3={r.keep_s3}, server={r.keep_server}")
