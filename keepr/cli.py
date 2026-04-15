@@ -73,8 +73,10 @@ def _show_status() -> None:
 
 job_app = typer.Typer(help="Manage backup jobs.")
 server_app = typer.Typer(help="Manage SSH servers.")
+config_app = typer.Typer(help="Show or update configuration.")
 app.add_typer(job_app, name="job")
 app.add_typer(server_app, name="server")
+app.add_typer(config_app, name="config")
 
 
 @job_app.callback(invoke_without_command=True)
@@ -82,6 +84,12 @@ def job_callback(ctx: typer.Context) -> None:
     if ctx.invoked_subcommand is None:
         typer.echo(ctx.get_help())
         raise typer.Exit(0)
+
+
+@config_app.callback(invoke_without_command=True)
+def config_callback(ctx: typer.Context) -> None:
+    if ctx.invoked_subcommand is None:
+        show_config()
 
 
 @server_app.callback(invoke_without_command=True)
@@ -483,7 +491,7 @@ def cleanup(
         apply_retention(cfg, name, cfg.jobs[name], dry_run=dry_run)
 
 
-@app.command("config")
+@config_app.command("show")
 def show_config(config: ConfigOption = None):
     """Show current configuration."""
     output.header()
@@ -513,6 +521,49 @@ def show_config(config: ConfigOption = None):
         for name, job in cfg.jobs.items():
             dests = ", ".join(d.value for d in cfg.get_destinations(job))
             output.info(f"  {name}: {job.type_label} -> \\[{dests}]")
+
+
+_CONFIG_KEYS = {
+    "local-dir":    ("storage", "local_dir", str),
+    "server-dir":   ("storage", "server_dir", str),
+    "keep-local":   ("defaults.retention", "keep_local", int),
+    "keep-s3":      ("defaults.retention", "keep_s3", int),
+    "keep-server":  ("defaults.retention", "keep_server", int),
+}
+
+
+@config_app.command("set")
+def config_set(
+    key: Annotated[str, typer.Argument(help=f"Key to update ({', '.join(_CONFIG_KEYS)})")],
+    value: Annotated[str, typer.Argument(help="New value")],
+    config: ConfigOption = None,
+):
+    """Update a config value."""
+    output.header()
+
+    if key not in _CONFIG_KEYS:
+        output.error(f"Unknown key: {key}")
+        output.info(f"Valid keys: {', '.join(_CONFIG_KEYS)}")
+        raise typer.Exit(1)
+
+    section, field, cast = _CONFIG_KEYS[key]
+    try:
+        typed_value = cast(value)
+    except ValueError:
+        output.error(f"Invalid value for {key}: must be {cast.__name__}")
+        raise typer.Exit(1)
+
+    data, path = _load_raw(config)
+
+    # Navigate / create nested dicts
+    parts = section.split(".")
+    node = data
+    for part in parts:
+        node = node.setdefault(part, {})
+    node[field] = typed_value
+
+    save_config_raw(data, path)
+    output.success(f"{key} = {typed_value}")
 
 
 @app.command()
