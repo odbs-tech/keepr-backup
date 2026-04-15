@@ -1,16 +1,11 @@
 from __future__ import annotations
 
-import shlex
 import shutil
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Annotated, Optional
 
 import typer
-
-try:
-    import readline  # noqa: F401 — up-arrow history in interactive mode
-except ImportError:
-    pass
 
 from keepr import output
 from keepr.config import (
@@ -32,45 +27,49 @@ app = typer.Typer(
 @app.callback(invoke_without_command=True)
 def main_callback(ctx: typer.Context) -> None:
     if ctx.invoked_subcommand is None:
-        _interactive_mode()
+        _show_status()
 
 
-def _interactive_mode() -> None:
+def _show_status() -> None:
     from keepr import __version__
-    output.interactive = True
-    output.console.print(f"\n  [bold]keepr[/bold] [muted]v{__version__}[/muted]")
-    output.console.print("  [muted]Type a command or 'help'. Ctrl+C to exit.[/muted]\n")
+    output.console.print(f"\n  [bold]keepr[/bold] [muted]v{__version__}[/muted]\n")
 
-    while True:
-        try:
-            line = input("  keepr > ").strip()
-        except (KeyboardInterrupt, EOFError):
-            output.console.print()
-            output.info("Bye!")
-            break
-
-        if not line:
-            continue
-        if line in ("exit", "quit", "q"):
-            output.info("Bye!")
-            break
-        if line in ("help", "?"):
-            try:
-                app(["--help"], standalone_mode=False)
-            except SystemExit:
-                pass
-            output.console.print()
-            continue
-
-        try:
-            args = shlex.split(line)
-            app(args, standalone_mode=False)
-        except (SystemExit, typer.Exit):
-            pass
-        except Exception as e:
-            output.error(str(e))
-
+    try:
+        cfg = load_config()
+    except FileNotFoundError:
+        output.warning("No config found. Run [bold]keepr init[/bold] to get started.")
         output.console.print()
+        return
+    except Exception as e:
+        output.error(f"Config error: {e}")
+        output.console.print()
+        return
+
+    job_count = len(cfg.jobs)
+    output.info(f"{job_count} job{'s' if job_count != 1 else ''} configured")
+
+    try:
+        from keepr.catalog import load_catalog
+        catalog = load_catalog()
+        if catalog.backups:
+            last = max(catalog.backups, key=lambda b: b.timestamp)
+            now = datetime.now(timezone.utc)
+            delta = now - last.timestamp
+            hours = int(delta.total_seconds() // 3600)
+            if hours < 1:
+                age = "just now"
+            elif hours < 24:
+                age = f"{hours}h ago"
+            else:
+                days = hours // 24
+                age = f"{days}d ago"
+            output.info(f"Last backup: [bold]{last.job}[/bold] — {age}")
+        else:
+            output.info("No backups yet — run [bold]keepr run[/bold]")
+    except Exception:
+        pass
+
+    output.console.print(f"\n  [muted]keepr run · keepr list · keepr job add <name>[/muted]\n")
 
 job_app = typer.Typer(help="Manage backup jobs.")
 server_app = typer.Typer(help="Manage SSH servers.")

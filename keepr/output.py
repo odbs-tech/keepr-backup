@@ -4,7 +4,6 @@ from rich.console import Console
 from rich.table import Table
 from rich.theme import Theme
 
-interactive: bool = False
 
 theme = Theme({
     "info": "cyan",
@@ -34,8 +33,6 @@ def error(msg: str) -> None:
 
 
 def header() -> None:
-    if interactive:
-        return
     from keepr import __version__
     console.print(f"\n  [bold]keepr[/bold] [muted]v{__version__}[/muted]\n")
 
